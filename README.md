@@ -59,9 +59,7 @@ Example repo: https://github.com/ktock/vscode-container-wasm-debian-example
 
 ## Release Notes
 
-<!-- ### 0.1.0 -->
-
-<!-- Initial release -->
+See https://github.com/ktock/vscode-container-wasm/releases
 
 ## Acknowledgement
 
