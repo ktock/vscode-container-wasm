@@ -1,4 +1,0 @@
-{
-    "container.imageLocation": "https://ktock.github.io/container2wasm-demo/containers/amd64-debian-wasi-container",
-    "container.imageChunks": 5
-}
