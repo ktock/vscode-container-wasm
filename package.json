@@ -19,6 +19,7 @@
       "url": "https://github.com/ktock/vscode-container-wasm/issues"
   },
   "browser": "./dist/web/extension.js",
+  "activationEvents": [],
   "contributes": {
     "commands": [
       {
