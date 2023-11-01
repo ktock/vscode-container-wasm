@@ -1,0 +1,4 @@
+{
+    "container.imageLocation": "https://ktock.github.io/container2wasm-demo/containers/amd64-python-wasi-container",
+    "container.imageChunks": 3
+}

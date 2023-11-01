@@ -1,0 +1,12 @@
+out
+dist
+node_modules
+.vscode-test/
+.vscode-test-web
+*.vsix
+
+src/vendor/wasm-wasi-core/dist
+src/vendor/wasm-wasi-core/node_modules
+src/vendor/wasm-wasi-core/.vscode-test-workspace/**/*
+!src/vendor/wasm-wasi-core/.vscode-test-workspace/dummy.txt
+src/vendor/wasm-wasi-core/lib

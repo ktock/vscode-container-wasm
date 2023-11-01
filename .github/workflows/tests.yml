@@ -1,0 +1,42 @@
+name: Tests
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-20.04
+    name: Build
+    strategy:
+      matrix:
+        node: [ 14, 16, 18 ]
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node }}
+    - name: Build
+      run: |
+        npm install
+        npm run compile
+    - name: Packaging
+      run: |
+        npm install -g vsce
+        vsce package
+
+  project:
+    name: Project Checks
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/setup-go@v3
+      with:
+        go-version: 1.18.x
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 100
+    - name: "Check DCO sign"
+      run: |
+        go install github.com/vbatts/git-validation@v1.1.0
+        git-validation -v -run DCO

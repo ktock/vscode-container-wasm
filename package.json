@@ -1,0 +1,86 @@
+{
+  "name": "container-wasm",
+  "displayName": "container-wasm",
+  "publisher": "ktock",
+  "description": "Run Container On VSCode for the Web",
+  "author": "ktock",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.83.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "repository": {
+      "type": "git",
+      "url": "https://github.com/ktock/vscode-container-wasm.git"
+  },
+  "bugs": {
+      "url": "https://github.com/ktock/vscode-container-wasm/issues"
+  },
+  "browser": "./dist/web/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "container-wasm.run",
+        "title": "Run Container On Browser"
+      }
+    ],
+    "configuration": {
+      "title": "Container",
+      "properties": {
+        "container.imageLocation": {
+          "type": "string",
+          "default": "container.wasm",
+          "description": "Specifies the URI of the Wasm-formatted container image."
+        },
+        "container.imageChunks": {
+          "type": "number",
+          "default": 0,
+          "description": "Specify non zero value if the image is chunked with suffix (< 99)"
+        },
+        "container.workspaceMountpoint": {
+          "type": "string",
+          "default": "/workspace",
+          "description": "Specify path to mount the workspace in container (set \"\" to disable mount)"
+        },
+        "container.networkingMode": {
+          "type": "string",
+          "default": "fetch",
+          "enum": ["none", "fetch"],
+          "description": "Networking mode"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "vscode-test-web --browserType=chromium --extensionDevelopmentPath=. --extensionTestsPath=dist/web/test/suite/index.js",
+    "pretest": "npm run compile-web",
+    "vscode:prepublish": "npm run package-web",
+    "compile-web": "webpack",
+    "watch-web": "webpack --watch",
+    "package-web": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext ts",
+    "run-in-browser": "vscode-test-web --browserType=chromium --extensionDevelopmentPath=. ."
+  },
+  "dependencies": {
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.2",
+    "@types/vscode": "^1.83.0",
+    "@types/webpack-env": "^1.18.2",
+    "@typescript-eslint/eslint-plugin": "^6.7.3",
+    "@typescript-eslint/parser": "^6.7.3",
+    "@vscode/test-web": "^0.0.46",
+    "@types/uuid": "^9.0.1",
+    "assert": "^2.1.0",
+    "eslint": "^8.50.0",
+    "mocha": "^10.2.0",
+    "process": "^0.11.10",
+    "ts-loader": "^9.4.4",
+    "typescript": "^5.2.2",
+    "webpack": "^5.88.2",
+    "webpack-cli": "^5.1.4"
+  }
+}
