@@ -57,6 +57,12 @@ Example repo: https://github.com/ktock/vscode-container-wasm-debian-example
 - Wasi host: [`vscode-wasm`](https://github.com/microsoft/vscode-wasm) is used for the container image. It's patched to support containers and networking.
 - Networking: NW stack running on browser and it uses the browser's Fetch API for performing HTTP(S) networking. Please see also [the docs in container2wasm](https://github.com/ktock/container2wasm/tree/v0.5.1/examples/networking/fetch).
 
+## FAQ
+
+### "SharedArrayBuffer is not defined" error occurs when launching the container
+
+To make SharedArrayBuffer available, please add `?vscode-coi=on` query to the URL and reload.
+
 ## Release Notes
 
 See https://github.com/ktock/vscode-container-wasm/releases
