@@ -14,11 +14,11 @@ HTTP(S) networking is also available in the container with restrictions by the b
 
 ### Quick Start
 
-1. Open `ktock/vscode-container-wasm-debian-example` on `github.dev` : https://github.dev/ktock/vscode-container-wasm-debian-example?vscode-coi=on (you need `?vscode-coi=on` query in the URL)
+1. Open `ktock/vscode-container-wasm-gcc-example` on `github.dev` : https://github.dev/ktock/vscode-container-wasm-gcc-example?vscode-coi=on  (you need `?vscode-coi=on` query in the URL)
 2. Install `ktock.container-wasm` extension.
 3. Run `> Run Container On Browser` in the command pallete. Then the container will be launched with the Terminal (can take some time to start the container).
 
-![Debian Container on browser](./docs/vscode-container-wasm-debian.png)
+![Container on browser](./docs/vscode-container-wasm-gcc.png)
 
 ## How to use
 
@@ -32,7 +32,9 @@ HTTP(S) networking is also available in the container with restrictions by the b
   - Upload that Wasm image somewhere accessible from VSCode for the Web.
   - Configure `.vscode/settings.json` in your repo to point to that image.
 
-Example repo: https://github.com/ktock/vscode-container-wasm-debian-example
+Example repos:
+- `gcc`: https://github.com/ktock/vscode-container-wasm-gcc-example
+- Debian + `curl`: https://github.com/ktock/vscode-container-wasm-debian-example
 
 ## Extension Settings
 
