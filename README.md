@@ -1,6 +1,6 @@
 # vscode-container-wasm: Containers on VSCode for the Web
 
-VSCode extension for running arbitrary containers on VSCode for the Web, leveraging [`container2wasm`](https://github.com/ktock/container2wasm) converter.
+A VSCode extension for running containers on VSCode for the Web, relying on [`container2wasm`](https://github.com/ktock/container2wasm) for container to wasm conversion.
 
 This is an experimental software.
 
