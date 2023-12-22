@@ -25,7 +25,7 @@ jobs:
         vsce package -o "${OUTPUT_DIR}/${FILE_NAME}"
         ( cd ${OUTPUT_DIR}; sha256sum ${FILE_NAME} ) > "${OUTPUT_DIR}/${SHA256SUM_FILE_NAME}"
     - name: Save package
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: builds-package
         path: ${{ env.OUTPUT_DIR }}/*
