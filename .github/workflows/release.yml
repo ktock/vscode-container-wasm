@@ -11,7 +11,7 @@ jobs:
     env:
       OUTPUT_DIR: ${{ github.workspace }}/release-out
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Setup vsce
       run: |
         npm install -g @vscode/vsce
@@ -37,7 +37,7 @@ jobs:
     env:
       OUTPUT_DIR: ${{ github.workspace }}/builds
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Download Builds
       uses: actions/download-artifact@v4
       with:
