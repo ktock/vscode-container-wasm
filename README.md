@@ -28,9 +28,13 @@ HTTP(S) networking is also available in the container with restrictions by the b
   - Launch a container by invoking `> Run Container On Browser`
 
 - For repository maintainers:
-  - Convert a container image to Wasm format using [`container2wasm`](https://github.com/ktock/container2wasm) converter. (e.g. `c2w ubuntu:22.04 out.wasm`)
-  - Upload that Wasm image somewhere accessible from VSCode for the Web.
-  - Configure `.vscode/settings.json` in your repo to point to that image.
+  - Option A:
+    - Convert a container image to Wasm format using [`container2wasm`](https://github.com/ktock/container2wasm) converter. (e.g. `c2w ubuntu:22.04 out.wasm`)
+    - Upload that Wasm image to a HTTP(S) server accessible from VSCode for the Web.
+    - Set `container.imageLocation` (in `.vscode/settings.json`) to the URL of that image.
+  - Option B:
+    - Upload container image in [OCI Image Layout](https://github.com/opencontainers/image-spec/blob/v1.0.2/image-layout.md) to a HTTP(S) server accessible from the browser. Or you can use registry configured to allow CORS access.
+    - Set `container.containerImage` (in `.vscode/settings.json`) to the URL of that image. Or if you used the registry as the server, write the image reference (i.e. `<registry>/<image-path>:<tag>`) there.
 
 Example repos:
 - `gcc`: https://github.com/ktock/vscode-container-wasm-gcc-example
@@ -40,8 +44,12 @@ Example repos:
 
 - `container.imageLocation` *string* : Specify the URI of the Wasm-formatted container image (or the prefix if the Wasm image is chunked)
 - `container.imageChunks` *number* : Specify non zero value if the image is chunked with suffix (< 99) (default:0)
+- `container.imageWithDecompression` *bool* : Set true if the image needs gzip decompression (default: false)
 - `container.workspaceMountpoint` *string* : Specify path to mount the workspace in container (set "" to disable mount) (default: "/workspace")
 - `container.networkingMode` *string* : Networking mode (enum: `["none", "fetch"]`) (default: "fetch")
+- `container.containerImage` *string* : Address of container image
+- `container.helperImageLocation` *string* : Specify the URI of the Wasm-formatted networking helper image.
+- `container.helperImageWithDecompression` *bool* : Set true if the helper image needs decompression
 
 ## Limitation
 

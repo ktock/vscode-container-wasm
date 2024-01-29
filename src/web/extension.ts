@@ -11,24 +11,43 @@ export async function activate(context: ExtensionContext) {
         const networkingMode = workspace.getConfiguration('container').networkingMode;
         let stackWorker: any = null;
         let net: any = null;
+        let containerImage = workspace.getConfiguration('container').containerImage;
+        let imageLocation = workspace.getConfiguration('container').imageLocation;
+        let imageWithDecompression = workspace.getConfiguration('container').imageWithDecompression;
+        let imageChunks = workspace.getConfiguration('container').imageChunks;
+        let helperImageLocation = workspace.getConfiguration('container').helperImageLocation;
+        let helperImageWithDecompression = workspace.getConfiguration('container').helperImageWithDecompression;
         if (networkingMode == "fetch") {
             const response = await fetch(Uri.joinPath(context.extensionUri, "dist/web/stack-worker.js").toString());
             const code = new Blob([await response.text()], { type: "application/javascript" });
             stackWorker = new Worker(URL.createObjectURL(code));
-            net = createStack(stackWorker);
+            if (containerImage != "") {
+                if (imageLocation == "") {
+                    imageLocation = "https://ktock.github.io/container2wasm-demo/extras/base.wasm.gzip";
+                    imageWithDecompression = true;
+                    imageChunks = 0;
+                }
+                if (helperImageLocation == "") {
+                    helperImageLocation = "https://ktock.github.io/container2wasm-demo/extras/imagemounter.wasm.gzip";
+                    helperImageWithDecompression = true;
+                }
+            } else {
+                if (helperImageLocation == "") {
+                    helperImageLocation = "https://ktock.github.io/container2wasm-demo/src/c2w-net-proxy.wasm";
+                }
+            }
+            net = createStack(stackWorker,  helperImageLocation, helperImageWithDecompression, containerImage);
         }
-        const image = workspace.getConfiguration('container').imageLocation;
-        const chunks = workspace.getConfiguration('container').imageChunks;
         let bits: ArrayBuffer;
         try {
-            const url = Uri.parse(image, true);
+            const url = Uri.parse(imageLocation, true);
             if (!(url.scheme === "http" || url.scheme === "https")) {
                 throw new Error("unrecognized url");
             }
-            if (chunks > 0) {
-                let format = (s: string) => image + s + '.wasm';
+            if (imageChunks > 0) {
+                let format = (s: string) => imageLocation + s + '.wasm';
                 let files = [];
-                for (let i = 0; i < chunks; i++) {
+                for (let i = 0; i < imageChunks; i++) {
                     let s = i.toString();
                     while (s.length < 2) s = "0" + s;
                     files[i] = s;
@@ -42,13 +61,26 @@ export async function activate(context: ExtensionContext) {
                 resps.forEach(r => results.push(r['arrayBuffer']()));
                 const ab = await Promise.all(results)
                 const blob = new Blob(ab);
-                bits = await blob.arrayBuffer();
+                if (imageWithDecompression) {
+                    const ds = new DecompressionStream("gzip")
+                    bits = await new Response(blob.stream().pipeThrough(ds))['arrayBuffer']();
+                } else {
+                    bits = await blob.arrayBuffer();
+                }
             } else {
-                const resp = await fetch(image);
-                bits = await resp['arrayBuffer']();
+                const resp = await fetch(imageLocation);
+                if (imageWithDecompression) {
+                    let wasmP = resp['blob']().then((blob) => {
+                        const ds = new DecompressionStream("gzip")
+                        return new Response(blob.stream().pipeThrough(ds))['arrayBuffer']();
+                    });
+                    bits = await wasmP;
+                } else {
+                    bits = await resp['arrayBuffer']();
+                }
             }
         } catch (_) {
-            const url = Uri.joinPath(context.extensionUri, image);
+            const url = Uri.joinPath(context.extensionUri, imageLocation);
             try {
                 bits = await workspace.fs.readFile(url);
             } catch (error : any) {
@@ -99,6 +131,9 @@ export async function activate(context: ExtensionContext) {
                     return "0123456789ABCDEF".charAt(Math.floor(Math.random() * 16))
                 });
                 opts.args = ['--net=socket', '--mac', mac];
+                if (containerImage != "") {
+                    opts.args = opts.args.concat(['--external-bundle=9p=192.168.127.252']);
+                }
                 opts.env = {
                     "SSL_CERT_FILE": "/.wasmenv/proxy.crt",
                     "https_proxy": "http://192.168.127.253:80",

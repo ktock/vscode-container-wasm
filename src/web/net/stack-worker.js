@@ -1,8 +1,12 @@
-import { WASI } from "./../../vendor/browser_wasi_shim/src/index";
-import { Iovec, Ciovec, EVENTTYPE_CLOCK, EVENTTYPE_FD_READ, EVENTTYPE_FD_WRITE } from "./../../vendor/browser_wasi_shim/src/wasi_defs";
+import { WASI } from "@bjorn3/browser_wasi_shim";
+import * as wasitype from "@bjorn3/browser_wasi_shim";
+import { Event, EventType, Subscription, SubscriptionClock, SubscriptionFdReadWrite, SubscriptionU, wasiHackSocket } from './wasi-util';
 
 onmessage = (msg) => {
-    serveIfInitMsg(msg);
+    var info = serveIfInitMsg(msg);
+    if (info == null) {
+        return;
+    }
     var fds = [
         undefined, // 0: stdin
         undefined, // 1: stdout
@@ -15,20 +19,32 @@ onmessage = (msg) => {
     var certfd = 3;
     var listenfd = 4;
     var args = ['arg0', '--certfd='+certfd, '--net-listenfd='+listenfd, '--debug'];
+    if (info.imageAddr != "") {
+        args = args.concat(['--image-addr='+info.imageAddr]);
+    }
     var env = [];
     var wasi = new WASI(args, env, fds);
     wasiHack(wasi, certfd, 5);
-    wasiHackSocket(wasi, listenfd, 5);
-    const proxyWasmUrl = "https://ktock.github.io/container2wasm-demo/src/c2w-net-proxy.wasm";
-    fetch(proxyWasmUrl).then((resp) => {
-        resp['arrayBuffer']().then((wasm) => {
+    wasiHackSocket(wasi, listenfd, 5, sockAccept, sockSend, sockRecv);
+    fetch(info.mounterWasmURL).then((resp) => {
+        var wasmP;
+        if (info.withImageDecompression) {
+            wasmP = resp['blob']().then((blob) => {
+                const ds = new DecompressionStream("gzip")
+                return new Response(blob.stream().pipeThrough(ds))['arrayBuffer']();
+            });
+        } else {
+            wasmP = resp['arrayBuffer']();
+        }
+        wasmP.then((wasm) => {
             WebAssembly.instantiate(wasm, {
                 "wasi_snapshot_preview1": wasi.wasiImport,
                 "env": envHack(wasi),
             }).then((inst) => {
                 wasi.start(inst.instance);
             });
-        })
+
+        });
     });
 };
 
@@ -62,9 +78,9 @@ function wasiHack(wasi, certfd, connfd) {
         if ((fd == 1) || (fd == 2) || (fd == certfd)) {
             var buffer = new DataView(wasi.inst.exports.memory.buffer);
             var buffer8 = new Uint8Array(wasi.inst.exports.memory.buffer);
-            var iovecs = Ciovec.read_bytes_array(buffer, iovs_ptr, iovs_len);
+            var iovecs = wasitype.wasi.Ciovec.read_bytes_array(buffer, iovs_ptr, iovs_len);
             var wtotal = 0
-            for (i = 0; i < iovecs.length; i++) {
+            for (var i = 0; i < iovecs.length; i++) {
                 var iovec = iovecs[i];
                 var buf = buffer8.slice(iovec.buf, iovec.buf + iovec.buf_len);
                 if (buf.length == 0) {
@@ -116,6 +132,9 @@ function wasiHack(wasi, certfd, connfd) {
             } else {
                 return ERRNO_INVAL; // FIXME
             }
+        }
+        if (!isClockPoll) {
+            timeout = 0;
         }
         let events = [];
         if (isReadPollStdin || isReadPollConn || isClockPoll) {
@@ -209,7 +228,7 @@ function envHack(wasi){
                 return ERRNO_INVAL;
             }
             var ddlen = streamLen[0];
-            var resp = streamData.slice(0, ddlen);
+            var resp = streamData.subarray(0, ddlen);
             buffer8.set(resp, respP);
             buffer.setUint32(respsizeP, ddlen, true);
             if (streamStatus[0] == 1) {
@@ -230,7 +249,7 @@ function envHack(wasi){
                 return ERRNO_INVAL;
             }
             var ddlen = streamLen[0];
-            var body = streamData.slice(0, ddlen);
+            var body = streamData.subarray(0, ddlen);
             buffer8.set(body, bodyP);
             buffer.setUint32(bodysizeP, ddlen, true);
             if (streamStatus[0] == 1) {
@@ -239,15 +258,69 @@ function envHack(wasi){
                 buffer.setUint32(isEOFP, 0, true);
             }
             return 0;
-        }
+        },
+        layer_request: function (addressP, addresslen, digestP, digestlen, isGzipN, idP) {
+            var buffer = new DataView(wasi.inst.exports.memory.buffer);
+            var address = new Uint8Array(wasi.inst.exports.memory.buffer, addressP, addresslen);
+            var digest = new Uint8Array(wasi.inst.exports.memory.buffer, digestP, digestlen);
+            streamCtrl[0] = 0;
+            postMessage({
+                type: "layer_request",
+                address: address,
+                digest: digest,
+                isGzipN: isGzipN,
+            });
+            Atomics.wait(streamCtrl, 0, 0);
+            if (streamStatus[0] < 0) {
+                return ERRNO_INVAL;
+            }
+            var id = streamStatus[0];
+            buffer.setUint32(idP, id, true);
+            return 0;
+        },
+        layer_isreadable: function(id, isOKP, sizeP) {
+            var buffer = new DataView(wasi.inst.exports.memory.buffer);
+            streamCtrl[0] = 0;
+            postMessage({type: "layer_isreadable", id: id});
+            Atomics.wait(streamCtrl, 0, 0);
+            if (streamStatus[0] < 0) {
+                return ERRNO_INVAL;
+            }
+            var readable = 0;
+            if (streamData[0] == 1) {
+                readable = 1;
+            }
+            buffer.setUint32(isOKP, readable, true);
+            var size = streamStatus[0];
+            buffer.setUint32(sizeP, size, true);
+            return 0;
+        },
+        layer_readat: function(id, respP, offset, len, respsizeP) {
+            var buffer = new DataView(wasi.inst.exports.memory.buffer);
+            var buffer8 = new Uint8Array(wasi.inst.exports.memory.buffer);
+
+            streamCtrl[0] = 0;
+            postMessage({
+                type: "layer_readat",
+                id: id,
+                offset: offset,
+                len: len,
+            });
+            Atomics.wait(streamCtrl, 0, 0);
+            if (streamStatus[0] < 0) {
+                return ERRNO_INVAL;
+            }
+            var ddlen = streamLen[0];
+            if (ddlen > len) {
+                ddlen = len
+            }
+            var body = streamData.subarray(0, ddlen);
+            buffer8.set(body, respP);
+            buffer.setUint32(respsizeP, ddlen, true);
+            return 0;
+        },
     };
 }
-
-////////////////////////////////////////////////////////////
-//
-// utilities
-//
-////////////////////////////////////////////////////////////
 
 var streamCtrl;
 var streamStatus;
@@ -260,7 +333,40 @@ function registerSocketBuffer(shared){
     streamData = new Uint8Array(shared, 12);
 }
 
-var numchunks;
+var toNetCtrl;
+var toNetBegin;
+var toNetEnd;
+var toNetNotify;
+var toNetData;
+var fromNetCtrl;
+var fromNetBegin;
+var fromNetEnd;
+var fromNetData;
+function registerConnBuffer(to, from) {
+    toNetCtrl = new Int32Array(to, 0, 1);
+    toNetBegin = new Int32Array(to, 4, 1);
+    toNetEnd = new Int32Array(to, 8, 1);
+    toNetNotify = new Int32Array(to, 12, 1);
+    toNetData = new Uint8Array(to, 16);
+    fromNetCtrl = new Int32Array(from, 0, 1);
+    fromNetBegin = new Int32Array(from, 4, 1);
+    fromNetEnd = new Int32Array(from, 8, 1);
+    fromNetData = new Uint8Array(from, 12);
+}
+
+var metaFromNetCtrl;
+var metaFromNetBegin;
+var metaFromNetEnd;
+var metaFromNetStatus;
+var metaFromNetData;
+function registerMetaBuffer(meta) {
+    metaFromNetCtrl = new Int32Array(meta, 0, 1);
+    metaFromNetBegin = new Int32Array(meta, 4, 1);
+    metaFromNetEnd = new Int32Array(meta, 8, 1);
+    metaFromNetStatus = new Int32Array(meta, 12, 1);
+    metaFromNetData = new Uint8Array(meta, 16);
+}
+
 function serveIfInitMsg(msg) {
     const req_ = msg.data;
     if (typeof req_ == "object"){
@@ -268,65 +374,210 @@ function serveIfInitMsg(msg) {
             if (req_.buf) {
                 var shared = req_.buf;
                 registerSocketBuffer(shared);
+                registerConnBuffer(req_.toBuf, req_.fromBuf);
+                registerMetaBuffer(req_.metaFromBuf);
             }
-            numchunks = req_.chunks;
-            return true;
+            return {
+                imageAddr: req_.imageAddr,
+                mounterWasmURL: req_.mounterWasmURL,
+                withImageDecompression: req_.withImageDecompression
+            };
         }
     }
 
-    return false;
+    return null;
 }
 
 const errStatus = {
     val: 0,
 };
 
+var accepted = false;
 function sockAccept(){
-    streamCtrl[0] = 0;
-    postMessage({type: "accept"});
-    Atomics.wait(streamCtrl, 0, 0);
-    return streamData[0] == 1;
+    accepted = true;
+    return true;
 }
+
 function sockSend(data){
-    streamCtrl[0] = 0;
-    postMessage({type: "send", buf: data});
-    Atomics.wait(streamCtrl, 0, 0);
-    if (streamStatus[0] < 0) {
-        errStatus.val = streamStatus[0]
-        return errStatus;
+    if (!accepted) {
+        return -1;
     }
+
+    for(;;) {
+        if (Atomics.compareExchange(fromNetCtrl, 0, 0, 1) == 0) {
+            break;
+        }
+        Atomics.wait(fromNetCtrl, 0, 1);
+    }
+    let begin = fromNetBegin[0]; //inclusive
+    let end = fromNetEnd[0]; //exclusive
+    var len;
+    var round;
+    if (end >= begin) {
+        len = fromNetData.byteLength - end;
+        round = begin;
+    } else {
+        len = begin - end;
+        round = 0;
+    }
+    if ((len + round) < data.length) {
+        // buffer is full; drop packets
+        // TODO: preserve this
+        console.log("FIXME: buffer full; dropping packets");
+    } else {
+        if (len > 0) {
+            if (len > data.length) {
+                len = data.length
+            }
+            fromNetData.set(data.subarray(0, len), end);
+            fromNetEnd[0] = end + len;
+        }
+        if ((round > 0) && (data.length > len)) {
+            if (round > data.length - len) {
+                round = data.length - len
+            }
+            fromNetData.set(data.subarray(len, len + round), 0);
+            fromNetEnd[0] = round;
+        }
+    }
+    if (Atomics.compareExchange(fromNetCtrl, 0, 1, 0) != 1) {
+        console.log("UNEXPECTED STATUS");
+    }
+    Atomics.notify(fromNetCtrl, 0, 1);
+    return 0;
 }
-function sockRecv(len){
-    streamCtrl[0] = 0;
-    postMessage({type: "recv", len: len});
-    Atomics.wait(streamCtrl, 0, 0);
-    if (streamStatus[0] < 0) {
-        errStatus.val = streamStatus[0]
-        return errStatus;
+
+function sockRecv(targetBuf, targetOffset, targetLen){
+    if (!accepted) {
+        return -1;
     }
-    let ddlen = streamLen[0];
-    var res = streamData.slice(0, ddlen);
-    return res;
+
+    for(;;) {
+        if (Atomics.compareExchange(toNetCtrl, 0, 0, 1) == 0) {
+            break;
+        }
+        Atomics.wait(toNetCtrl, 0, 1);
+    }
+    let begin = toNetBegin[0]; //inclusive
+    let end = toNetEnd[0]; //exclusive
+    var len;
+    var round;
+    if (end >= begin) {
+        len = end - begin;
+        round = 0;
+    } else {
+        len = toNetData.byteLength - begin;
+        round = end;
+    }
+    if (targetLen < len) {
+        len = targetLen;
+        round = 0;
+    } else if (targetLen < len + round) {
+        round = targetLen - len;
+    }
+    if (len > 0) {
+        targetBuf.set(toNetData.subarray(begin, begin + len), targetOffset);
+        toNetBegin[0] = begin + len;
+    }
+    if (round > 0) {
+        targetBuf.set(toNetData.subarray(0, round), targetOffset + len);
+        toNetBegin[0] = round;
+    }
+    if (Atomics.compareExchange(toNetCtrl, 0, 1, 0) != 1) {
+        console.log("UNEXPECTED STATUS");
+    }
+    Atomics.notify(toNetCtrl, 0, 1);
+
+    return (len + round);
 }
 
 function sockWaitForReadable(timeout){
-    streamCtrl[0] = 0;
-    postMessage({type: "recv-is-readable", timeout: timeout});
-    Atomics.wait(streamCtrl, 0, 0);
-    if (streamStatus[0] < 0) {
-        errStatus.val = streamStatus[0]
+    if (!accepted) {
+        errStatus.val = -1;
         return errStatus;
     }
-    return streamData[0] == 1;
+
+    for(;;) {
+        if (Atomics.compareExchange(toNetCtrl, 0, 0, 1) == 0) {
+            break;
+        }
+        Atomics.wait(toNetCtrl, 0, 1);
+    }
+    let begin = toNetBegin[0]; //inclusive
+    let end = toNetEnd[0]; //exclusive
+    var len;
+    var round;
+    if (end >= begin) {
+        len = end - begin;
+        round = 0;
+    } else {
+        len = toNetData.byteLength - begin;
+        round = end;
+    }
+    var ready;
+    if ((len + round) > 0) {
+        ready = true;
+    } else {
+        ready = false;
+    }
+    if (Atomics.compareExchange(toNetCtrl, 0, 1, 0) != 1) {
+        console.log("UNEXPECTED STATUS");
+    }
+    Atomics.notify(toNetCtrl, 0, 1);
+
+    if (ready) {
+        return true;
+    } else if (timeout == 0) {
+        return false;
+    }
+
+    // buffer not ready; wait for readable.
+    streamCtrl[0] = 0;
+    Atomics.store(toNetNotify, 0, 0);
+    postMessage({type: "recv-is-readable", timeout: timeout});
+    Atomics.wait(toNetNotify, 0, 0);
+    var res = Atomics.load(toNetNotify, 0);
+
+    postMessage({type: "recv-is-readable-cancel"});
+    Atomics.wait(streamCtrl, 0, 0);
+
+    Atomics.store(toNetNotify, 0, 0);
+    return res == 1;
 }
 
 function sendCert(data){
-    streamCtrl[0] = 0;
-    postMessage({type: "send_cert", buf: data});
-    Atomics.wait(streamCtrl, 0, 0);
-    if (streamStatus[0] < 0) {
-        errStatus.val = streamStatus[0]
-        return errStatus;
+    var curOff = 0;
+    var done = false;
+    for(;;) {
+        for(;;) {
+            if (Atomics.compareExchange(metaFromNetCtrl, 0, 0, 1) == 0) {
+                break;
+            }
+            Atomics.wait(metaFromNetCtrl, 0, 1);
+        }
+        let end = metaFromNetEnd[0]; //exclusive
+        if (end == 0) {
+            var len = metaFromNetData.length;
+            var remain = data.byteLength - curOff;
+            if (remain == 0) {
+                metaFromNetStatus[0] = 1; // done
+                done = true;
+            } else {
+                if (remain < len) {
+                    len = remain;
+                }
+                metaFromNetData.set(data.subarray(curOff, len), 0);
+                metaFromNetEnd[0] = len;
+                curOff += len;
+            }
+        }
+        if (Atomics.compareExchange(metaFromNetCtrl, 0, 1, 0) != 1) {
+            console.log("UNEXPECTED STATUS");
+        }
+        Atomics.notify(metaFromNetCtrl, 0, 1);
+        if (done) {
+            break;
+        }
     }
 }
 
@@ -335,253 +586,4 @@ function appendData(data1, data2) {
     buf2.set(new Uint8Array(data1), 0);
     buf2.set(new Uint8Array(data2), data1.byteLength);
     return buf2;
-}
-
-function wasiHackSocket(wasi, listenfd, connfd) {
-    // definition from wasi-libc https://github.com/WebAssembly/wasi-libc/blob/wasi-sdk-19/expected/wasm32-wasi/predefined-macros.txt
-    const ERRNO_INVAL = 28;
-    const ERRNO_AGAIN= 6;
-    var connfdUsed = false;
-    var connbuf = new Uint8Array(0);
-    var _fd_close = wasi.wasiImport.fd_close;
-    wasi.wasiImport.fd_close = (fd) => {
-        if (fd == connfd) {
-            connfdUsed = false;
-            return 0;
-        }
-        return _fd_close.apply(wasi.wasiImport, [fd]);
-    }
-    var _fd_read = wasi.wasiImport.fd_read;
-    wasi.wasiImport.fd_read = (fd, iovs_ptr, iovs_len, nread_ptr) => {
-        if (fd == connfd) {
-            return wasi.wasiImport.sock_recv(fd, iovs_ptr, iovs_len, 0, nread_ptr, 0);
-        }
-        return _fd_read.apply(wasi.wasiImport, [fd, iovs_ptr, iovs_len, nread_ptr]);
-    }
-    var _fd_write = wasi.wasiImport.fd_write;
-    wasi.wasiImport.fd_write = (fd, iovs_ptr, iovs_len, nwritten_ptr) => {
-        if (fd == connfd) {
-            return wasi.wasiImport.sock_send(fd, iovs_ptr, iovs_len, 0, nwritten_ptr);
-        }
-        return _fd_write.apply(wasi.wasiImport, [fd, iovs_ptr, iovs_len, nwritten_ptr]);
-    }
-    var _fd_fdstat_get = wasi.wasiImport.fd_fdstat_get;
-    wasi.wasiImport.fd_fdstat_get = (fd, fdstat_ptr) => {
-        if ((fd == listenfd) || (fd == connfd) && connfdUsed){
-            let buffer = new DataView(wasi.inst.exports.memory.buffer);
-            // https://github.com/WebAssembly/WASI/blob/snapshot-01/phases/snapshot/docs.md#-fdstat-struct
-            buffer.setUint8(fdstat_ptr, 6); // filetype = 6 (socket_stream)
-            buffer.setUint8(fdstat_ptr + 1, 2); // fdflags = 2 (nonblock)
-            return 0;
-        }
-        return _fd_fdstat_get.apply(wasi.wasiImport, [fd, fdstat_ptr]);
-    }
-    wasi.wasiImport.sock_accept = (fd, flags, fd_ptr) => {
-        if (fd != listenfd) {
-            console.log("sock_accept: unknown fd " + fd);
-            return ERRNO_INVAL;
-        }
-        if (connfdUsed) {
-            console.log("sock_accept: multi-connection is unsupported");
-            return ERRNO_INVAL;
-        }
-        if (!sockAccept()) {
-            return ERRNO_AGAIN;
-        }
-        connfdUsed = true;
-        var buffer = new DataView(wasi.inst.exports.memory.buffer);
-        buffer.setUint32(fd_ptr, connfd, true);
-        return 0;
-    }
-    wasi.wasiImport.sock_send = (fd, iovs_ptr, iovs_len, si_flags/*not defined*/, nwritten_ptr) => {
-        if (fd != connfd) {
-            console.log("sock_send: unknown fd " + fd);
-            return ERRNO_INVAL;
-        }
-        var buffer = new DataView(wasi.inst.exports.memory.buffer);
-        var buffer8 = new Uint8Array(wasi.inst.exports.memory.buffer);
-        var iovecs = Ciovec.read_bytes_array(buffer, iovs_ptr, iovs_len);
-        var wtotal = 0
-        for (i = 0; i < iovecs.length; i++) {
-            var iovec = iovecs[i];
-            var buf = buffer8.slice(iovec.buf, iovec.buf + iovec.buf_len);
-            if (buf.length == 0) {
-                continue;
-            }
-            var ret = sockSend(buf.buffer.slice(0, iovec.buf_len));
-            if (ret == errStatus) {
-                return ERRNO_INVAL;
-            }
-            wtotal += buf.length;
-        }
-        buffer.setUint32(nwritten_ptr, wtotal, true);
-        return 0;
-    }
-    wasi.wasiImport.sock_recv = (fd, iovs_ptr, iovs_len, ri_flags, nread_ptr, ro_flags_ptr) => {
-        if (ri_flags != 0) {
-            console.log("ri_flags are unsupported"); // TODO
-        }
-        if (fd != connfd) {
-            console.log("sock_recv: unknown fd " + fd);
-            return ERRNO_INVAL;
-        }
-        var sockreadable = sockWaitForReadable();
-        if (sockreadable == errStatus) {
-            return ERRNO_INVAL;
-        } else if (sockreadable == false) {
-            return ERRNO_AGAIN;
-        }
-        var buffer = new DataView(wasi.inst.exports.memory.buffer);
-        var buffer8 = new Uint8Array(wasi.inst.exports.memory.buffer);
-        var iovecs = Iovec.read_bytes_array(buffer, iovs_ptr, iovs_len);
-        var nread = 0;
-        for (i = 0; i < iovecs.length; i++) {
-            var iovec = iovecs[i];
-            if (iovec.buf_len == 0) {
-                continue;
-            }
-            var data = sockRecv(iovec.buf_len);
-            if (data == errStatus) {
-                return ERRNO_INVAL;
-            }
-            buffer8.set(data, iovec.buf);
-            nread += data.length;
-        }
-        buffer.setUint32(nread_ptr, nread, true);
-        // TODO: support ro_flags_ptr
-        return 0;
-    }
-    wasi.wasiImport.sock_shutdown = (fd, sdflags) => {
-        if (fd == connfd) {
-            connfdUsed = false;
-        }
-        return 0;
-    }
-}
-
-////////////////////////////////////////////////////////////
-//
-// event-related classes adopted from the on-going discussion
-// towards poll_oneoff support in browser_wasi_sim project.
-// Ref: https://github.com/bjorn3/browser_wasi_shim/issues/14#issuecomment-1450351935
-//
-////////////////////////////////////////////////////////////
-
-class EventType {
-    /*:: variant: "clock" | "fd_read" | "fd_write"*/
-
-    constructor(variant/*: "clock" | "fd_read" | "fd_write"*/) {
-        this.variant = variant;
-    }
-
-    static from_u8(data/*: number*/)/*: EventType*/ {
-        switch (data) {
-        case EVENTTYPE_CLOCK:
-            return new EventType("clock");
-        case EVENTTYPE_FD_READ:
-            return new EventType("fd_read");
-        case EVENTTYPE_FD_WRITE:
-            return new EventType("fd_write");
-        default:
-            throw "Invalid event type " + String(data);
-        }
-    }
-
-    to_u8()/*: number*/ {
-        switch (this.variant) {
-        case "clock":
-            return EVENTTYPE_CLOCK;
-        case "fd_read":
-            return EVENTTYPE_FD_READ;
-        case "fd_write":
-            return EVENTTYPE_FD_WRITE;
-        default:
-            throw "unreachable";
-        }
-    }
-}
-
-class Event {
-    /*:: userdata: UserData*/
-    /*:: error: number*/
-    /*:: type: EventType*/
-    /*:: fd_readwrite: EventFdReadWrite | null*/
-
-    write_bytes(view/*: DataView*/, ptr/*: number*/) {
-        view.setBigUint64(ptr, this.userdata, true);
-        view.setUint8(ptr + 8, this.error);
-        view.setUint8(ptr + 9, 0);
-        view.setUint8(ptr + 10, this.type.to_u8());
-        // if (this.fd_readwrite) {
-        //     this.fd_readwrite.write_bytes(view, ptr + 16);
-        // }
-    }
-
-    static write_bytes_array(view/*: DataView*/, ptr/*: number*/, events/*: Array<Event>*/) {
-        for (let i = 0; i < events.length; i++) {
-            events[i].write_bytes(view, ptr + 32 * i);
-        }
-    }
-}
-
-class SubscriptionClock {
-    /*:: timeout: number*/
-
-    static read_bytes(view/*: DataView*/, ptr/*: number*/)/*: SubscriptionFdReadWrite*/ {
-        let self = new SubscriptionClock();
-        self.timeout = Number(view.getBigUint64(ptr + 8, true));
-        return self;
-    }
-}
-
-class SubscriptionFdReadWrite {
-    /*:: fd: number*/
-
-    static read_bytes(view/*: DataView*/, ptr/*: number*/)/*: SubscriptionFdReadWrite*/ {
-        let self = new SubscriptionFdReadWrite();
-        self.fd = view.getUint32(ptr, true);
-        return self;
-    }
-}
-
-class SubscriptionU {
-    /*:: tag: EventType */
-    /*:: data: SubscriptionClock | SubscriptionFdReadWrite */
-
-    static read_bytes(view/*: DataView*/, ptr/*: number*/)/*: SubscriptionU*/ {
-        let self = new SubscriptionU();
-        self.tag = EventType.from_u8(view.getUint8(ptr));
-        switch (self.tag.variant) {
-        case "clock":
-            self.data = SubscriptionClock.read_bytes(view, ptr + 8);
-            break;
-        case "fd_read":
-        case "fd_write":
-            self.data = SubscriptionFdReadWrite.read_bytes(view, ptr + 8);
-            break;
-        default:
-            throw "unreachable";
-        }
-        return self;
-    }
-}
-
-class Subscription {
-    /*:: userdata: UserData */
-    /*:: u: SubscriptionU */
-
-    static read_bytes(view/*: DataView*/, ptr/*: number*/)/*: Subscription*/ {
-        let subscription = new Subscription();
-        subscription.userdata = view.getBigUint64(ptr, true);
-        subscription.u = SubscriptionU.read_bytes(view, ptr + 8);
-        return subscription;
-    }
-
-    static read_bytes_array(view/*: DataView*/, ptr/*: number*/, len/*: number*/)/*: Array<Subscription>*/ {
-        let subscriptions = [];
-        for (let i = 0; i < len; i++) {
-            subscriptions.push(Subscription.read_bytes(view, ptr + 48 * i));
-        }
-        return subscriptions;
-    }
 }
