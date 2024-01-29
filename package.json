@@ -4,7 +4,7 @@
   "publisher": "ktock",
   "description": "Run Container On VSCode for the Web",
   "author": "ktock",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.83.0"
   },
