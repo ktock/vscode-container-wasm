@@ -982,18 +982,13 @@ export namespace DeviceWasiService {
 				const buffers = read_iovs(memory, ri_data_ptr, ri_data_len);
                                 let bytesRead: number = 0;
 	 		        if (buffers.length > 0) {
-	 		            const maxBytesToRead = buffers.reduce<number>((prev, current) => prev + current.length, 0);
-	 		            const result = net.recv(maxBytesToRead);
-	 		            let offset = 0;
 	 		            let totalBytesRead = 0;
 	 		            for (const buffer of buffers) {
-	 			        const toCopy = Math.min(buffer.length, result.length - offset);
-	 			        buffer.set(result.subarray(offset, offset + toCopy));
-	 			        offset += toCopy;
-	 			        totalBytesRead += toCopy;
-	 			        if (toCopy < buffer.length) {
-	 				    break;
-	 			        }
+                                        const n = net.recv(buffer, 0, buffer.length);
+                                        totalBytesRead += n;
+                                        if (n < buffer.length) {
+                                            break;
+                                        }
 	 		            }
                                     bytesRead = totalBytesRead;
                                 }
@@ -1012,20 +1007,18 @@ export namespace DeviceWasiService {
 			    try {
 				const view = new DataView(memory);
 				const buffers = read_ciovs(memory, si_data_ptr, si_data_len);
-                                let buffer: Uint8Array;
+                                let totalLen = 0;
 	 		        if (buffers.length === 1) {
-	 			    buffer = buffers[0];
+                                    net.send(buffers[0]); // TODO: handle error (non-accepted state)
+                                    totalLen = buffers[0].byteLength;
 	 		        } else {
 	 			    const byteLength: number = buffers.reduce<number>((prev, current) => prev + current.length, 0);
-	 			    buffer = new Uint8Array(byteLength);
-	 			    let offset = 0;
 	 			    for (const item of buffers) {
-	 				buffer.set(item, offset);
-	 				offset = item.byteLength;
+                                        net.send(item); // TODO: handle error (non-accepted state)
+                                        totalLen += item.byteLength;
 	 			    }
 	 		        }
-                                net.send(buffer); // TODO: handle error (non-accepted state)
-				view.setUint32(si_datalen_ptr, buffer.byteLength, true);
+				view.setUint32(si_datalen_ptr, totalLen, true);
 				return Promise.resolve(Errno.success);
 			    } catch (error) {
 				return handleErrorPromise(error);

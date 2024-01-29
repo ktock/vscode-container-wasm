@@ -32,13 +32,18 @@
       "properties": {
         "container.imageLocation": {
           "type": "string",
-          "default": "container.wasm",
+          "default": "",
           "description": "Specifies the URI of the Wasm-formatted container image."
         },
         "container.imageChunks": {
           "type": "number",
           "default": 0,
           "description": "Specify non zero value if the image is chunked with suffix (< 99)"
+        },
+        "container.imageWithDecompression": {
+          "type": "bool",
+          "default": false,
+          "description": "Set true if the image needs decompression"
         },
         "container.workspaceMountpoint": {
           "type": "string",
@@ -48,8 +53,26 @@
         "container.networkingMode": {
           "type": "string",
           "default": "fetch",
-          "enum": ["none", "fetch"],
+          "enum": [
+            "none",
+            "fetch"
+          ],
           "description": "Networking mode"
+        },
+        "container.containerImage": {
+          "type": "string",
+          "default": "",
+          "description": "Address of container image"
+        },
+        "container.helperImageLocation": {
+          "type": "string",
+          "default": "",
+          "description": "Specifies the URI of the Wasm-formatted networking helper image."
+        },
+        "container.helperImageWithDecompression": {
+          "type": "bool",
+          "default": false,
+          "description": "Set true if the helper image needs decompression"
         }
       }
     }
@@ -68,13 +91,14 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.2.17",
     "@types/mocha": "^10.0.2",
+    "@types/uuid": "^9.0.1",
     "@types/vscode": "^1.83.0",
     "@types/webpack-env": "^1.18.2",
     "@typescript-eslint/eslint-plugin": "^6.7.3",
     "@typescript-eslint/parser": "^6.7.3",
     "@vscode/test-web": "^0.0.46",
-    "@types/uuid": "^9.0.1",
     "assert": "^2.1.0",
     "eslint": "^8.50.0",
     "mocha": "^10.2.0",

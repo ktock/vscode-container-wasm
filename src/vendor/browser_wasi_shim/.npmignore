@@ -1,6 +1,0 @@
-node_modules
-*.wasm
-*.wasm.gz
-/examples
-.github/
-src/
