@@ -363,7 +363,13 @@ function connect(name, shared, toNet) {
                     streamStatus[0] = reqID;
                     break;
                 case "http_writebody":
-                    httpConnections[req_.id].reqBodybuf = appendData(httpConnections[req_.id].reqBodybuf, req_.body)
+                    var s;
+                    if (httpConnections[req_.id] == undefined) {
+                        s = newUint8Array(0);
+                    } else {
+                        s = httpConnections[req_.id].reqBodybuf;
+                    }
+                    httpConnections[req_.id].reqBodybuf = appendData(s, req_.body)
                     httpConnections[req_.id].reqBodyEOF = req_.isEOF;
                     streamStatus[0] = 0;
                     if (req_.isEOF && !httpConnections[req_.id].requestSent) {
@@ -567,6 +573,99 @@ function connect(name, shared, toNet) {
                     serveDataOffset(httpConnections[req_.id].respBodybuf, req_.offset, req_.len);
                     streamStatus[0] = 0;
                     break;
+
+                case "decompress_init":
+                    var ds = new DecompressionStream("gzip");
+                    var r = ds.readable.getReader();
+                    var w = ds.writable.getWriter();
+                    decompressors[decompressID] = {
+                        reader: r,
+                        writer: w,
+                        writerClosed: false,
+                        closed: false,
+                        reading: false,
+                        resbuf: new Uint8Array(0),
+                        done: false,
+                        error: null,
+                    }
+                    var decompressIDA = decompressID;
+                    r.closed.then(() => {
+                        decompressors[decompressIDA].closed = true;
+                    }).catch((e) => {
+                        console.log("error on closing:", e);
+                    })
+                    streamStatus[0] = decompressIDA;
+                    decompressID++;
+                    break;
+                case "decompress_write":
+                    if (decompressors[req_.id] == undefined) {
+                        console.log("unknown id", req_.id);
+                    } else {
+                        if (req_.chunk.byteLength > 0) {
+                            decompressors[req_.id].writer.write(req_.chunk);
+                        }
+                        if ((req_.isEOF == 1) && (!decompressors[req_.id].writerClosed)) {
+                            try {
+                                decompressors[req_.id].writer.ready.then(() => {
+                                    decompressors[req_.id].writer.close();
+                                    decompressors[req_.id].writerClosed = true;
+                                });
+                            } catch(e) {
+                                console.log("error decompress_write:", e);
+                                streamStatus[0] = -1;
+                            }
+                        }
+                    }
+                    break;
+                case "decompress_read":
+                    if (decompressors[req_.id] == undefined) {
+                        console.log("unknown id", req_.id);
+                    } else {
+                        var readnext = true;
+                        if (decompressors[req_.id].error != null) {
+                            streamStatus[0] = -1;
+                            readnext = false;
+                        } else {
+                            decompressors[req_.id].resbuf = serveData(decompressors[req_.id].resbuf, req_.len);
+                            streamStatus[0] = 0;
+                            if (decompressors[req_.id].done) {
+                                readnext = false;
+                                if (decompressors[req_.id].resbuf.byteLength == 0) {
+                                    streamStatus[0] = 1; // isEOF
+                                    delete decompressors[req_.id]; // decompression done
+                                }
+                            }
+                        }
+                        if (readnext) {
+                            var id = req_.id;
+                            if (!decompressors[id].reading) {
+                                decompressors[id].reader.read().then((o) => {
+                                    var rb;
+                                    if ((decompressors[id] == undefined) || (decompressors[id].resbuf == undefined)) {
+                                        rb = new Uint8Array(0);
+                                    } else {
+                                        rb = decompressors[id].resbuf;
+                                    }
+                                    var ov;
+                                    if ((o == undefined) || (o.value == undefined)) {
+                                        ov = new Uint8Array(0);
+                                    } else {
+                                        ov = o.value;
+                                    }
+                                    decompressors[id].resbuf = appendData(rb, ov);
+                                    decompressors[id].reading = false;
+                                    if ((decompressors[id].closed) && (o.done)) {
+                                        decompressors[id].done = true;
+                                    }
+                                }).catch((e) => {
+                                    console.log("error decompress_read:", e);
+                                    decompressors[id].error = e;
+                                })
+                                decompressors[id].reading = true;
+                            }
+                        }
+                    }
+                    break;
                 default:
                     console.log(name + ":" + "unknown request: " +  req_.type)
                     return;
@@ -578,6 +677,9 @@ function connect(name, shared, toNet) {
         }
     }
 }
+
+var decompressID = 0;
+var decompressors = {};
 
 function appendData(data1, data2) {
     let buf2 = new Uint8Array(data1.byteLength + data2.byteLength);
