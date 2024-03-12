@@ -217,7 +217,6 @@ class FileSystem {
 
 		this.inodes = new Map();
 		this.inodes.set(this.root.inode, this.root);
-		this.contents = new Map();
 		this.stats = new Map();
 		this.deletedNodes = new Map();
 		this.pathCache = new LRUCache(256);
@@ -329,16 +328,8 @@ class FileSystem {
 		return this.getNodeByPath(parent, path) !== undefined;
 	}
 
-	public setContent(inode: FileNode, content: Uint8Array): void {
-		this.contents.set(inode.inode, content);
-	}
-
 	public async getContent(inode: FileNode, contentProvider: { readFile(uri: Uri): Thenable<Uint8Array> }): Promise<Uint8Array> {
-		let content = this.contents.get(inode.inode);
-		if (content === undefined)	{
-			content = await contentProvider.readFile(this.getUri(inode));
-			this.contents.set(inode.inode, content);
-		}
+		let content = await contentProvider.readFile(this.getUri(inode));
 		return Promise.resolve(content);
 	}
 
@@ -362,9 +353,6 @@ class FileSystem {
 		}
 		const name = this.getName(node);
 		node.parent.entries.delete(name);
-		if (content !== undefined) {
-			this.contents.set(node.inode, content);
-		}
 		if (stat !== undefined) {
 			this.stats.set(node.inode, stat);
 		}
@@ -388,7 +376,6 @@ class FileSystem {
 		node.refs--;
 		if (node.refs === 0) {
 			if (node.kind === NodeKind.File) {
-				this.contents.delete(node.inode);
 				this.stats.delete(node.inode);
 			}
 			this.deletedNodes.delete(node.inode);
@@ -566,9 +553,6 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 	async function writeContent(node: FileNode, content?: Uint8Array): Promise<void> {
 		const toWrite = content ?? await fs.getContent(node, vscode_fs);
 		await vscode_fs.writeFile(fs.getUri(node), toWrite);
-		if (content !== undefined) {
-			fs.setContent(node, content);
-		}
 	}
 
 	const $this: FileSystemDeviceDriver = {
