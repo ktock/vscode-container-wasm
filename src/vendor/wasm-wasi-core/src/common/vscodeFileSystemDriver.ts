@@ -9,7 +9,7 @@ import { LRUCache } from './linkedMap';
 import { u64, size } from './baseTypes';
 import {
 	fdstat, filestat, Rights, fd, rights, fdflags, Filetype, WasiError, Errno, filetype, Whence,
-	lookupflags, timestamp, fstflags, oflags, Oflags, filesize, Fdflags, inode, Lookupflags
+	lookupflags, timestamp, fstflags, Fstflags, oflags, Oflags, filesize, Fdflags, inode, Lookupflags
 } from './wasi';
 import { BigInts, code2Wasi } from './converter';
 import { BaseFileDescriptor, FdProvider, FileDescriptor } from './fileDescriptor';
@@ -128,6 +128,10 @@ type FileNode = {
 	 * generation
 	 */
 	name: string | undefined;
+
+	/* Cached timestamp */
+	mtime: number | undefined;
+	ctime: number | undefined;
 };
 
 namespace FileNode {
@@ -137,7 +141,9 @@ namespace FileNode {
 			inode: id,
 			refs: 0,
 			parent,
-			name: undefined
+			name: undefined,
+			mtime: undefined,
+			ctime: undefined,
 		};
 	}
 }
@@ -171,6 +177,10 @@ type DirectoryNode = {
 	 * generation
 	 */
 	name: string | undefined;
+
+	/* Cached timestamp */
+	mtime: number | undefined;
+	ctime: number | undefined;
 };
 
 type Node = FileNode | DirectoryNode;
@@ -183,7 +193,9 @@ namespace DirectoryNode {
 			refs: 0,
 			parent,
 			name: undefined,
-			entries: new Map()
+			entries: new Map(),
+			mtime: undefined,
+			ctime: undefined,
 		};
 	}
 }
@@ -196,8 +208,6 @@ class FileSystem {
 	private readonly root: DirectoryNode;
 
 	private readonly inodes: Map<inode, Node>;
-	// Cache contents of files
-	private readonly contents: Map<inode, Uint8Array>;
 	// Cached stats for deleted files and directories if there is still
 	// an open file descriptor
 	private readonly stats: Map<inode, FileStat>;
@@ -212,7 +222,9 @@ class FileSystem {
 			parent: undefined,
 			refs: 1,
 			name: '/',
-			entries: new Map()
+			entries: new Map(),
+			mtime: undefined,
+			ctime: undefined,
 		};
 
 		this.inodes = new Map();
@@ -244,6 +256,12 @@ class FileSystem {
 		}
 		this.assertNodeKind(node, kind);
 		return node;
+	}
+
+	public touchMCtime(inode: FileNode | DirectoryNode) {
+		const now: number = new Date().getTime();
+		inode.mtime = now;
+		inode.ctime = now;
 	}
 
 	public getOrCreateNode(parent: DirectoryNode, path: string, kind: NodeKind, ref: boolean): FileNode | DirectoryNode {
@@ -280,6 +298,7 @@ class FileSystem {
 						current.entries.set(parts[i], entry);
 						// Cache the name for faster lookup.
 						entry.name = parts[i];
+						this.touchMCtime(current);
 						this.inodes.set(entry.inode, entry);
 					} else {
 						if (i === parts.length - 1 && ref) {
@@ -629,6 +648,8 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 			}
 			const inode = fs.getNode(fileDescriptor.inode);
 			const vStat: FileStat = await vscode_fs.stat(fs.getUri(inode));
+			vStat.ctime = inode.ctime || vStat.ctime;
+			vStat.mtime = inode.mtime || vStat.mtime;
 			assignStat(result, inode.inode, vStat);
 		},
 		async fd_filestat_set_size(fileDescriptor: FileDescriptor, _size: bigint): Promise<void> {
@@ -643,17 +664,36 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 				const newContent = new Uint8Array(size);
 				newContent.set(content);
 				await writeContent(node, newContent);
+				fs.touchMCtime(node);
 			} else if (content.byteLength > size) {
 				const newContent = new Uint8Array(size);
 				newContent.set(content.subarray(0, size));
 				await writeContent(node, newContent);
+				fs.touchMCtime(node);
 			}
 		},
-		fd_filestat_set_times(_fileDescriptor: FileDescriptor, _atim: bigint, _mtim: bigint, _fst_flags: fstflags): Promise<void> {
-			// For new we do nothing. We could cache the timestamp in memory
-			// But we would loose them during reload. We could also store them
+		async fd_filestat_set_times(fileDescriptor: FileDescriptor, atim: bigint, mtim: bigint, fst_flags: fstflags): Promise<void> {
+			// We would loose timestamp during reload. We could also store them
 			// in local storage
-			throw new WasiError(Errno.nosys);
+			const node = fs.getNode(fileDescriptor.inode);
+			var tim: number = 0;
+			var doset: boolean = false;
+			const now: number = new Date().getTime();
+			// TODO: atime
+			if (Fstflags.mtimOn(fst_flags)) {
+				tim = BigInts.asNumber(mtim / 1000000n)
+				doset = true;
+			}
+			if (Fstflags.mtim_nowOn(fst_flags)) {
+				tim = now;
+				doset = true;
+			}
+			if (!doset) {
+				return Promise.resolve();
+			}
+			node.mtime = now;
+			node.ctime = now;
+			return Promise.resolve();
 		},
 		async fd_pread(fileDescriptor: FileDescriptor, _offset: filesize, buffers: Uint8Array[]): Promise<size> {
 			const offset = BigInts.asNumber(_offset);
@@ -665,6 +705,7 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 			const inode = fs.getNode(fileDescriptor.inode, NodeKind.File);
 			const [newContent, bytesWritten] = write(await fs.getContent(inode, vscode_fs), offset, buffers);
 			await writeContent(inode, newContent);
+			fs.touchMCtime(inode);
 			return bytesWritten;
 		},
 		async fd_read(fileDescriptor: FileDescriptor, buffers: Uint8Array[]): Promise<number> {
@@ -739,6 +780,7 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 				fileDescriptor.cursor = content.byteLength;
 			}
 			const [newContent, bytesWritten] = write(content, fileDescriptor.cursor, buffers);
+			fs.touchMCtime(inode);
 			await writeContent(inode,newContent);
 			fileDescriptor.cursor = fileDescriptor.cursor + bytesWritten;
 			return bytesWritten;
@@ -746,18 +788,43 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 		async path_create_directory(fileDescriptor: FileDescriptor, path: string): Promise<void> {
 			const inode = fs.getNode(fileDescriptor.inode, NodeKind.Directory);
 			await vscode_fs.createDirectory(fs.getUri(inode, path));
+			fs.touchMCtime(inode);
 		},
 		async path_filestat_get(fileDescriptor: FileDescriptor, _flags: lookupflags, path: string, result: filestat): Promise<void> {
 			assertDirectoryDescriptor(fileDescriptor);
 			const inode = fs.getNode(fileDescriptor.inode, NodeKind.Directory);
 			const vStat: FileStat = await vscode_fs.stat(fs.getUri(inode, path));
+			const cinode = fs.getNodeByPath(inode, path);
+			if (cinode != undefined) {
+				vStat.ctime = cinode.ctime || vStat.ctime;
+				vStat.mtime = cinode.mtime || vStat.mtime;
+			}
 			assignStat(result, fs.getOrCreateNode(inode, path, vStat.type === FileType.Directory ? NodeKind.Directory : NodeKind.File, false).inode, vStat);
 		},
-		path_filestat_set_times(_fileDescriptor: FileDescriptor, _flags: lookupflags, _path: string, _atim: timestamp, _mtim: timestamp, _fst_flags: fstflags): Promise<void> {
-			// For now we do nothing. We could cache the timestamp in memory
-			// But we would loose them during reload. We could also store them
+		async path_filestat_set_times(fileDescriptor: FileDescriptor, _flags: lookupflags, path: string, atim: timestamp, mtim: timestamp, fst_flags: fstflags): Promise<void> {
+			// We would loose timestamp during reload. We could also store them
 			// in local storage
-			throw new WasiError(Errno.nosys);
+			const inodep = fs.getNode(fileDescriptor.inode, NodeKind.Directory);
+			const vStat: FileStat = await vscode_fs.stat(fs.getUri(inodep, path));
+			const node = fs.getOrCreateNode(inodep, path, vStat.type === FileType.Directory ? NodeKind.Directory : NodeKind.File, false)
+			// TODO: atime
+			var tim: number = 0;
+			var doset: boolean = false;
+			const now: number = new Date().getTime();
+			if (Fstflags.mtimOn(fst_flags)) {
+				tim = BigInts.asNumber(mtim / 1000000n)
+				doset = true;
+			}
+			if (Fstflags.mtim_nowOn(fst_flags)) {
+				tim = now;
+				doset = true;
+			}
+			if (!doset) {
+				return Promise.resolve();
+			}
+			node.mtime = now;
+			node.ctime = now;
+			return Promise.resolve();
 		},
 		path_link(_oldFileDescriptor: FileDescriptor, _old_flags: lookupflags, _old_path: string, _newFileDescriptor: FileDescriptor, _new_path: string): Promise<void> {
 			// For now we do nothing. If we need to implement this we need
@@ -839,6 +906,8 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 			if (targetNode !== undefined && targetNode.refs > 0) {
 				try {
 					filestat = await vscode_fs.stat(fs.getUri(targetNode));
+					filestat.ctime = targetNode.ctime || filestat.ctime;
+					filestat.mtime = targetNode.mtime || filestat.mtime;
 				} catch {
 					filestat = { type: FileType.Directory, ctime: Date.now(), mtime: Date.now(), size: 0 };
 				}
@@ -868,6 +937,8 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 				try {
 					const uri = fs.getUri(oldNode);
 					filestat = await vscode_fs.stat(uri);
+					filestat.ctime = oldNode.ctime || filestat.ctime;
+					filestat.mtime = oldNode.mtime || filestat.mtime;
 					if (oldNode.kind === NodeKind.File) {
 						content = await vscode_fs.readFile(uri);
 					}
@@ -899,6 +970,8 @@ export function create(deviceId: DeviceId, baseUri: Uri, readOnly: boolean = fal
 				try {
 					const uri = fs.getUri(targetNode);
 					filestat = await vscode_fs.stat(uri);
+					filestat.ctime = targetNode.ctime || filestat.ctime;
+					filestat.mtime = targetNode.mtime || filestat.mtime;
 					content = await vscode_fs.readFile(uri);
 				} catch {
 					filestat = { type: FileType.File, ctime: Date.now(), mtime: Date.now(), size: 0 };
